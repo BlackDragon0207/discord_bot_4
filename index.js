@@ -1,0 +1,142 @@
+const { AttachmentBuilder, ActivityType, Client, GatewayIntentBits, Events, Partials, Collection, EmbedBuilder, ClientUser, messageLink } = require('discord.js');
+//const { token, logChannelId } = require('./config.json');
+const path = require('path');
+const { readdirSync } = require('fs');
+const fs = require('fs');
+require('dotenv/config');
+
+// 클라이언트 초기화
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildPresences,
+        GatewayIntentBits.GuildMessageReactions, // 이모티콘 반응 감지
+        GatewayIntentBits.GuildVoiceStates, // 보이스 감지
+    ],
+    partials: [
+        Partials.Channel,
+        Partials.Message,
+        Partials.Reaction,
+    ],
+});
+
+client.commands = new Collection();
+
+// 명령어 파일 불러오기 - 절대 경로로 src/commands 지정
+const commandsPath = path.join(__dirname, 'src', 'commands');
+const commandFiles = readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+
+console.debug(`명령어 파일을 로드 중: ${commandFiles.length}개의 파일 발견`);
+
+for (const file of commandFiles) {
+    try {
+        // 명령어 파일 로드 (src/commands 폴더에서)
+        const command = require(path.join(commandsPath, file));
+        if (command.data && command.data.name) {
+            client.commands.set(command.data.name, command);
+            console.debug(`명령어 로드 완료: ${command.data.name}`);
+        } else {
+            throw new Error(`명령어 파일 구조가 잘못되었습니다: ${file}`);
+        }
+    } catch (error) {
+        console.error(`명령어 파일 로드 실패 (${file}):`, error);
+        sendErrorLog(`명령어 파일 로드 실패 (${file}): ${error.message}`);
+    }
+}
+
+
+// logs 폴더 안의 모든 파일을 읽어와서 모듈화된 코드로 실행
+const logsPath = path.join(__dirname, 'src', 'logs');
+fs.readdirSync(logsPath).forEach(file => {
+    if (file.endsWith('.js')) {
+        require(path.join(logsPath, file))(client);
+    }
+});
+
+const securityPath = path.join(__dirname, "src", "security");
+const securityFiles = fs.readdirSync(securityPath).filter(file => file.endsWith(".js"));
+
+for (const file of securityFiles) {
+    const securityEvent = require(path.join(securityPath, file));
+    if (securityEvent.name) {
+        client.on(securityEvent.name, (...args) => securityEvent.execute(...args));
+    }
+}
+
+
+// 봇 준비 이벤트
+client.once('ready', async () => {
+    const messages = [
+        '즐거운 시간 되세요!',
+        '함께 해주셔서 감사합니다!',
+        '인생 서버 연결'
+    ];
+    let current = 0;
+    
+    setInterval(() => {
+        client.user.setPresence({
+            activities: [{ name: `${messages[current]}`, type: ActivityType.Watching }],
+            status: 'idle',
+        });
+        
+        current = (current + 1) % messages.length;
+    }, 7500);
+
+    
+    console.log(`${client.user.tag}로 로그인 되었습니다!`);
+    console.debug(`현재 서버에 연결된 길드 수: ${client.guilds.cache.size}`);
+});
+
+
+// 명령어 인터랙션 이벤트
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isCommand()) return;
+
+    console.debug(`명령어 실행 요청: ${interaction.commandName}`);
+
+    const command = client.commands.get(interaction.commandName);
+
+    if (!command) {
+        console.debug(`명령어를 찾을 수 없음: ${interaction.commandName}`);
+        return;
+    }
+    try {
+        await command.execute(interaction);
+        console.debug(`명령어 실행 성공: ${interaction.commandName}`);
+    } catch (error) {
+        console.error(`명령어 실행 중 오류 발생: ${interaction.commandName}`, error);
+        sendErrorLog(`명령어 실행 중 오류 발생: ${error.message}\n\n명령어: ${interaction.commandName}`);
+        await interaction.reply({ content: '명령어 실행 중 오류가 발생했습니다.', ephemeral: true });
+    }
+});
+
+
+// 클라이언트 로그인
+client.login(process.env.token).then(() => {
+    console.log('봇이 성공적으로 로그인 되었습니다.');
+}).catch(error => {
+    console.error('로그인 중 오류 발생:', error);
+});
+
+
+// 오류 로그를 특정 채널로 보내는 함수
+async function sendErrorLog(message) {
+    try {
+        const logChannel = client.channels.cache.get(logChannelId);
+        if (logChannel && logChannel.isTextBased()) {
+            const embed = new EmbedBuilder()
+                .setColor('#FF0000')
+                .setTitle('오류 발생')
+                .setDescription(message)
+                .setTimestamp();
+            await logChannel.send({ embeds: [embed] });
+        }
+    } catch (error) {
+        console.error('로그 채널에 메시지 전송 중 오류 발생:', error);
+    }
+}
+
